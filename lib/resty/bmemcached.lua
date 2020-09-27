@@ -256,8 +256,8 @@ end
 
 local function connect(self)
   local bucket = self.bucket
-  local host = bucket.host
-  local port = bucket.port
+  local host = bucket.cluster.host
+  local port = bucket.cluster.port
   local pool = host .. "/" .. bucket.name
   local sock = self.connections[pool]
   if sock then
