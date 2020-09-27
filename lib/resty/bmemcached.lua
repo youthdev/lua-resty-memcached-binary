@@ -74,7 +74,7 @@ local zero_4 = encoder.pack_bytes(4, 0, 0, 0, 0)
 local bmemcached_cluster = {}
 --- @type BmemcachedBucket
 --  @field #BmemcachedCluster cluster
-local bmemcacehd_bucket = {}
+local bmemcached_bucket = {}
 --- @type BmemcachedSession
 --  @field #BmemcachedBucket bucket
 local bmemcached_session = {}
@@ -188,7 +188,7 @@ end
 function _M.cluster(opts)
   opts = opts or {}
 
-  assert((opts.host or opts.socket) and opts.user and opts.password, "host, user and password required")
+  assert((opts.host or opts.socket), "host or socket argument is required")
 
   opts.port = opts.port or defaults.port
   opts.timeout = opts.timeout or defaults.timeout
@@ -219,7 +219,7 @@ function bmemcached_cluster:bucket(opts)
   end
 
   return setmetatable(opts, {
-    __index = bmemcacehd_bucket
+    __index = bmemcached_bucket
   })
 end
 
