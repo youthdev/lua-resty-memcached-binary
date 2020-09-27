@@ -126,9 +126,7 @@ Create the cluster object.
 local memcached = require "resty.bmemcached"
 
 local cluster = memcached.cluster {
-  host = "10.0.10.2",
-  user = "Administrator",
-  password = "Administrator"
+  host = "10.0.10.2"
 }
 ```
 
@@ -143,21 +141,15 @@ bucket
 Create the bucket object.
 
 ```
-local bucket = cluster:bucket {
-  name = "b",
-  password = "1111",
-  VBUCKETAWARE = true
-}
+local bucket = cluster:bucket()
 ```
 
 `opts` - the table with parameters.
 
 * name - Memcached BUCKET name (default: `default`).
-* password - SASL password for the bucket `name`.
 * timeout - socket timeout.
 * pool_size - bucket keepalive pool size.
 * pool_idle - bucket keepalive pool idle in sec.
-* VBUCKETAWARE: `true` or `false`.
 
 **return:** bucket object or throws the error.
 
