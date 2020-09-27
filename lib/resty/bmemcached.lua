@@ -41,6 +41,7 @@ local defaults = {
 
 local op_code = c.op_code
 local status = c.status
+local vbucket_id = 0
 
 -- encoder
 
@@ -253,9 +254,10 @@ local function auth_sasl(peer, bucket)
   end
 end
 
-local function connect(self, vbucket_id)
+local function connect(self)
   local bucket = self.bucket
-  local host, port = get_vbucket_peer(bucket, vbucket_id)
+  local host = bucket.host
+  local port = bucket.port
   local pool = host .. "/" .. bucket.name
   local sock = self.connections[pool]
   if sock then
@@ -335,8 +337,7 @@ local op_extras = {
 
 function bmemcached_session:set(key, value, expire, cas)
   assert(key and value, "key and value required")
-  local vbucket_id = get_vbucket_id(self.bucket, key)
-  return request(self.bucket, connect(self, vbucket_id), encode(op_code.Set, {
+  return request(self.bucket, connect(self), encode(op_code.Set, {
     key = key,
     value = value,
     expire = expire or 0,
@@ -348,8 +349,7 @@ end
 
 function bmemcached_session:setQ(key, value, expire, cas)
   assert(key and value, "key and value required")
-  local vbucket_id = get_vbucket_id(self.bucket, key)
-  return requestQ(self.bucket, connect(self, vbucket_id), encode(op_code.SetQ, {
+  return requestQ(self.bucket, connect(self), encode(op_code.SetQ, {
     key = key,
     value = value,
     expire = expire or 0,
@@ -361,8 +361,7 @@ end
 
 function bmemcached_session:add(key, value, expire)
   assert(key and value, "key and value required")
-  local vbucket_id = get_vbucket_id(self.bucket, key)
-  return request(self.bucket, connect(self, vbucket_id), encode(op_code.Add, {
+  return request(self.bucket, connect(self), encode(op_code.Add, {
     key = key,
     value = value,
     expire = expire or 0,
@@ -373,8 +372,7 @@ end
 
 function bmemcached_session:addQ(key, value, expire)
   assert(key and value, "key and value required")
-  local vbucket_id = get_vbucket_id(self.bucket, key)
-  return requestQ(self.bucket, connect(self, vbucket_id), encode(op_code.AddQ, {
+  return requestQ(self.bucket, connect(self), encode(op_code.AddQ, {
     key = key,
     value = value,
     expire = expire or 0,
@@ -385,8 +383,7 @@ end
 
 function bmemcached_session:replace(key, value, expire, cas)
   assert(key and value, "key and value required")
-  local vbucket_id = get_vbucket_id(self.bucket, key)
-  return request(self.bucket, connect(self, vbucket_id), encode(op_code.Replace, {
+  return request(self.bucket, connect(self), encode(op_code.Replace, {
     key = key,
     value = value,
     expire = expire or 0,
@@ -398,8 +395,7 @@ end
 
 function bmemcached_session:replaceQ(key, value, expire, cas)
   assert(key and value, "key and value required")
-  local vbucket_id = get_vbucket_id(self.bucket, key)
-  return requestQ(self.bucket, connect(self, vbucket_id), encode(op_code.ReplaceQ, {
+  return requestQ(self.bucket, connect(self), encode(op_code.ReplaceQ, {
     key = key,
     value = value,
     expire = expire or 0,
@@ -411,8 +407,7 @@ end
 
 function bmemcached_session:get(key)
   assert(key, "key required")
-  local vbucket_id = get_vbucket_id(self.bucket, key)
-  return request(self.bucket, connect(self, vbucket_id), encode(op_code.Get, {
+  return request(self.bucket, connect(self), encode(op_code.Get, {
     key = key,
     vbucket_id = vbucket_id
   }))
@@ -424,8 +419,7 @@ end
 
 function bmemcached_session:getK(key)
   assert(key, "key required")
-  local vbucket_id = get_vbucket_id(self.bucket, key)
-  return request(self.bucket, connect(self, vbucket_id), encode(op_code.GetK, {
+  return request(self.bucket, connect(self), encode(op_code.GetK, {
     key = key,
     vbucket_id = vbucket_id
   }))
@@ -437,8 +431,7 @@ end
 
 function bmemcached_session:touch(key, expire)
   assert(key and expire, "key and expire required")
-  local vbucket_id = get_vbucket_id(self.bucket, key)
-  return request(self.bucket, connect(self, vbucket_id), encode(op_code.Touch, {
+  return request(self.bucket, connect(self), encode(op_code.Touch, {
     key = key,
     expire = expire,
     vbucket_id = vbucket_id
@@ -447,8 +440,7 @@ end
 
 function bmemcached_session:gat(key, expire)
   assert(key and expire, "key and expire required")
-  local vbucket_id = get_vbucket_id(self.bucket, key)
-  return request(self.bucket, connect(self, vbucket_id), encode(op_code.GAT, {
+  return request(self.bucket, connect(self), encode(op_code.GAT, {
     key = key,
     expire = expire, 
     vbucket_id = vbucket_id
@@ -464,8 +456,7 @@ function bmemcached_session:gatKQ(key, expire)
 end
 
 function bmemcached_session:delete(key, cas)
-  local vbucket_id = get_vbucket_id(self.bucket, key)
-  return request(self.bucket, connect(self, vbucket_id), encode(op_code.Delete, {
+  return request(self.bucket, connect(self), encode(op_code.Delete, {
     key = key,
     cas = cas,
     vbucket_id = vbucket_id
@@ -473,8 +464,7 @@ function bmemcached_session:delete(key, cas)
 end
 
 function bmemcached_session:deleteQ(key, cas)
-  local vbucket_id = get_vbucket_id(self.bucket, key)
-  return requestQ(self.bucket, connect(self, vbucket_id), encode(op_code.DeleteQ, {
+  return requestQ(self.bucket, connect(self), encode(op_code.DeleteQ, {
     key = key,
     cas = cas,
     vbucket_id = vbucket_id
@@ -482,12 +472,11 @@ function bmemcached_session:deleteQ(key, cas)
 end
 
 function bmemcached_session:increment(key, increment, initial, expire)
-  local vbucket_id = get_vbucket_id(self.bucket, key)
   local extras = zero_4                  ..
                  put_i32(increment or 1) ..
                  zero_4                  ..
                  put_i32(initial or 0)
-  return request(self.bucket, connect(self, vbucket_id), encode(op_code.Increment, {
+  return request(self.bucket, connect(self), encode(op_code.Increment, {
     key = key, 
     expire = expire or 0,
     extras = extras,
@@ -501,12 +490,11 @@ function bmemcached_session:increment(key, increment, initial, expire)
 end 
 
 function bmemcached_session:incrementQ(key, increment, initial, expire)
-  local vbucket_id = get_vbucket_id(self.bucket, key)
   local extras = zero_4                  ..
                  put_i32(increment or 1) ..
                  zero_4                  ..
                  put_i32(initial or 0)
-  return requestQ(self.bucket, connect(self, vbucket_id), encode(op_code.IncrementQ, {
+  return requestQ(self.bucket, connect(self), encode(op_code.IncrementQ, {
     key = key, 
     expire = expire or 0,
     extras = extras,
@@ -515,12 +503,11 @@ function bmemcached_session:incrementQ(key, increment, initial, expire)
 end 
 
 function bmemcached_session:decrement(key, decrement, initial, expire)
-  local vbucket_id = get_vbucket_id(self.bucket, key)
   local extras = zero_4                  ..
                  put_i32(decrement or 1) ..
                  zero_4                  ..
                  put_i32(initial or 0)
-  return request(self.bucket, connect(self, vbucket_id), encode(op_code.Decrement, {
+  return request(self.bucket, connect(self), encode(op_code.Decrement, {
     key = key, 
     expire = expire or 0,
     extras = extras,
@@ -534,12 +521,11 @@ function bmemcached_session:decrement(key, decrement, initial, expire)
 end
 
 function bmemcached_session:decrementQ(key, decrement, initial, expire)
-  local vbucket_id = get_vbucket_id(self.bucket, key)
   local extras = zero_4                  ..
                  put_i32(decrement or 1) ..
                  zero_4                  ..
                  put_i32(initial or 0)
-  return requestQ(self.bucket, connect(self, vbucket_id), encode(op_code.DecrementQ, {
+  return requestQ(self.bucket, connect(self), encode(op_code.DecrementQ, {
     key = key, 
     expire = expire or 0,
     extras = extras,
@@ -549,8 +535,7 @@ end
 
 function bmemcached_session:append(key, value, cas)
   assert(key and value, "key and value required")
-  local vbucket_id = get_vbucket_id(self.bucket, key)
-  return request(self.bucket, connect(self, vbucket_id), encode(op_code.Append, {
+  return request(self.bucket, connect(self), encode(op_code.Append, {
     key = key,
     value = value,
     cas = cas,
@@ -560,8 +545,7 @@ end
 
 function bmemcached_session:appendQ(key, value, cas)
   assert(key and value, "key and value required")
-  local vbucket_id = get_vbucket_id(self.bucket, key)
-  return requestQ(self.bucket, connect(self, vbucket_id), encode(op_code.AppendQ, {
+  return requestQ(self.bucket, connect(self), encode(op_code.AppendQ, {
     key = key,
     value = value,
     cas = cas,
@@ -571,8 +555,7 @@ end
 
 function bmemcached_session:prepend(key, value, cas)
   assert(key and value, "key and value required")
-  local vbucket_id = get_vbucket_id(self.bucket, key)
-  return request(self.bucket, connect(self, vbucket_id), encode(op_code.Prepend, {
+  return request(self.bucket, connect(self), encode(op_code.Prepend, {
     key = key,
     value = value,
     cas = cas,
@@ -584,8 +567,7 @@ function bmemcached_session:prependQ(key, value, cas)
   if not key or not value then
     return nil, "key and value required"
   end
-  local vbucket_id = get_vbucket_id(self.bucket, key)
-  return requestQ(self.bucket, connect(self, vbucket_id), encode(op_code.PrependQ, {
+  return requestQ(self.bucket, connect(self), encode(op_code.PrependQ, {
     key = key,
     value = value,
     cas = cas,
@@ -639,9 +621,8 @@ end
 
 function bmemcached_session:send(op, opts)
   assert(op and opts and opts.key, "op_code, opts and opts.key required")
-  opts.vbucket_id = get_vbucket_id(self.bucket, opts.key)
   opts.extras = op_extras[op]
-  local result = { requestQ(self.bucket, connect(self, opts.vbucket_id), encode(op, opts)) }
+  local result = { requestQ(self.bucket, connect(self), encode(op, opts)) }
   opts.vbucket_id, opts.extras = nil, nil
   return unpack(result)
 end
