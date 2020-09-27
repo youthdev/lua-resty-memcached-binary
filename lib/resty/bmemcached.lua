@@ -1,4 +1,4 @@
---- @module Couchbase
+--- @module Bmemcached
 
 local _M = {
   _VERSION = '1.0.0'
@@ -8,8 +8,8 @@ local cjson = require "cjson"
 local http = require "resty.http"
 local bit = require "bit"
 
-local c = require "resty.couchbase.consts"
-local encoder = require "resty.couchbase.encoder"
+local c = require "resty.bmemcached.consts"
+local encoder = require "resty.bmemcached.encoder"
 
 local tcp = ngx.socket.tcp
 local tconcat, tinsert, tremove = table.concat, table.insert, table.remove
@@ -31,8 +31,7 @@ local HTTP_OK, HTTP_BAD_REQUEST, HTTP_NOT_FOUND = ngx.HTTP_OK, ngx.HTTP_BAD_REQU
 local null = ngx.null
 
 local defaults = {
-  port = 8091,
-  n1ql = 8093,
+  port = 11211,
   timeout = 30000,
   pool_idle = 10,
   pool_size = 10
@@ -71,18 +70,16 @@ local zero_4 = encoder.pack_bytes(4, 0, 0, 0, 0)
 
 -- class tables
 
---- @type CouchbaseCluster
-local couchbase_cluster = {}
---- @type CouchbaseBucket
---  @field #CouchbaseCluster cluster
-local couchbase_bucket = {}
---- @type CouchbaseSession
---  @field #CouchbaseBucket bucket
-local couchbase_session = {}
+--- @type BmemcachedCluster
+local bmemcached_cluster = {}
+--- @type BmemcachedBucket
+--  @field #BmemcachedCluster cluster
+local bmemcacehd_bucket = {}
+--- @type BmemcachedSession
+--  @field #BmemcachedBucket bucket
+local bmemcached_session = {}
 
 -- request
-
-local VBUCKET_MOVED = status.VBUCKET_MOVED
 
 --- @type Request
 local request_class = {}
@@ -121,11 +118,7 @@ function request_class:receive(opaque, limit)
     do
       header = handle_header(assert(self.sock:receive(24)))
       key, value = handle_body(self.sock, header)
-      if header.status_code == VBUCKET_MOVED then
-        -- update vbucket_map on next request
-        self.bucket.map.vbuckets, self.bucket.map.servers = nil, nil
-        error(header.status)
-      end
+
       if opaque then
         if opaque == header.opaque then
           return
@@ -188,137 +181,9 @@ local function request_until(bucket, peer, packet)
   return list
 end
 
--- helpers
-
-local function fetch_url(bucket, url, cb)
-  local cluster = bucket.cluster
-
-  local httpc = http.new()
-
-  httpc:set_timeout(cluster.timeout)
-
-  if cluster.socket then
-    assert(httpc:connect(cluster.socket))
-  else
-    assert(httpc:connect(cluster.host, cluster.port))
-  end
-
-  local resp = assert(httpc:request {
-    path = url,
-    headers = {
-      Authorization = "Basic " .. encode_base64(cluster.user .. ":" .. cluster.password),
-      Accept = "application/json",
-      Host = cluster.socket and "couchbase" or cluster.host .. ":" .. cluster.port
-    }
-  })
-
-  assert(resp.status ~= ngx.HTTP_BAD_GATEWAY, "Connection failed")
-  assert(resp.status ~= ngx.HTTP_GATEWAY_TIMEOUT, "Connection timeout")
-  assert(resp.status ~= ngx.HTTP_INTERNAL_SERVER_ERROR, "Internal server error")
-  assert(resp.status ~= ngx.HTTP_UNAUTHORIZED, "Unauthorized")
-  assert(resp.status ~= ngx.HTTP_FORBIDDEN, "Forbidden")
-  assert(resp.status ~= ngx.HTTP_BAD_REQUEST, "Bad request")
-  assert(resp.status ~= ngx.HTTP_NOT_FOUND, "Resource not found")
-
-  -- Checking for other errors
-  assert(resp.status == HTTP_OK, "Status=" .. (resp.status or ngx.HTTP_SERVICE_UNAVAILABLE))
-
-  local body = assert(resp:read_body())
-
-  httpc:set_keepalive(10000, 10)
-
-  return cb(assert(json_decode(body)))
-end
-
-local function fetch_n1ql_peers(bucket)
-  return fetch_url(bucket, "/pools/default", function(json)
-    assert(json.nodes and #json.nodes ~= 0, "nodes array is not found or empty")
-
-    local n1ql = {}
-
-    for j, node in ipairs(json.nodes)
-    do
-      assert(node.hostname, "nodes[" .. j .. "].hostname is not found")
-      local hostname = node.hostname:match("^(.+):%d+$")
-      assert(hostname,      "nodes[" .. j .. "].hostname can't parse")
-      foreachi(node.services or {}, function(service)
-        if service == "n1ql" then
-          tinsert(n1ql, hostname)
-        end
-      end)
-    end
-
-    return n1ql
-  end)
-end
-
-local function fetch_vbuckets(bucket)
-  return fetch_url(bucket, "/pools/default/buckets/" .. bucket.name, function(json)
-    assert(json.vBucketServerMap,              "vBucketServerMap is not found")
-    assert(json.vBucketServerMap.vBucketMap,   "vBucketMap is not found")
-    assert(json.vBucketServerMap.serverList,   "serverList is not found")
-    assert(json.nodes and #json.nodes ~= 0,    "nodes array is not found or empty")
-
-    local ports = {}
-
-    for j, node in ipairs(json.nodes)
-    do
-      assert(node.hostname,      "nodes[" .. j .. "].hostname is not found")
-      assert(node.ports,         "nodes[" .. j .. "].ports is not found")
-      assert(node.ports.direct,  "nodes[" .. j .. "].ports.direct is not found")
-      assert(bucket.VBUCKETAWARE or node.ports.proxy, "nodes[" .. j .. "].ports.proxy is not found")
-      local hostname = node.hostname:match("^(.+):%d+$")
-      assert(hostname,           "nodes[" .. j .. "].hostname can't parse")
-      ports[hostname] = { node.ports.direct, node.ports.proxy }
-    end
-
-    for j, server in ipairs(json.vBucketServerMap.serverList)
-    do
-      local hostname = server:match("^(.+):%d+$")
-      assert(hostname,    "serverList[" .. j .. "]=" .. server .. " can't parse")
-      local node_ports = ports[hostname]
-      assert(node_ports,  "serverList[" .. j .. "]=" .. server .. " node is not found")
-      local direct_port, proxy_port = unpack(node_ports)
-      json.vBucketServerMap.serverList[j] = { hostname, bucket.VBUCKETAWARE and direct_port or proxy_port }
-    end
-
-    return json.vBucketServerMap.vBucketMap, json.vBucketServerMap.serverList
-  end)
-end
-
-local function update_vbucket_map(bucket)
-  if not bucket.map.vbuckets then
-    bucket.map.vbuckets, bucket.map.servers = fetch_vbuckets(bucket)
-    bucket.n1ql = fetch_n1ql_peers(bucket)
-    ngx_log(DEBUG, "update vbucket [", bucket.name, "] VBUCKETAWARE=", (bucket.VBUCKETAWARE and "true" or "false"),
-                   " servers=", json_encode(bucket.map.servers), " n1ql=", json_encode(bucket.n1ql))
-  end
-end
-
-local function get_vbucket_id(bucket, key)
-  update_vbucket_map(bucket)
-  return bucket.VBUCKETAWARE and band(rshift(crc32(key), 16), #bucket.map.vbuckets - 1) or nil
-end
-
-local function get_query_peer(bucket)
-  update_vbucket_map(bucket)
-  return #bucket.n1ql ~= 0 and bucket.n1ql[random(1, #bucket.n1ql)] or nil
-end
-
-local function get_vbucket_peer(bucket, vbucket_id)
-  update_vbucket_map(bucket)
-  local servers = bucket.map.servers
-  if not vbucket_id or not bucket.VBUCKETAWARE then
-    -- get random
-    return unpack(servers[random(1, #servers)])
-  end
-  -- https://developer.couchbase.com/documentation/server/3.x/developer/dev-guide-3.0/topology.html#story-h2-2
-  return unpack(servers[bucket.map.vbuckets[vbucket_id + 1][1] + 1])
-end
-
 -- cluster class
 
---- @return #CouchbaseCluster
+--- @return #BmemcachedCluster
 --  @param #table opts
 function _M.cluster(opts)
   opts = opts or {}
@@ -331,13 +196,13 @@ function _M.cluster(opts)
   opts.buckets = {}
 
   return setmetatable(opts, {
-    __index = couchbase_cluster
+    __index = bmemcached_cluster
   })
 end
 
---- @return #CouchbaseBucket
---  @param #CouchbaseCluster self
-function couchbase_cluster:bucket(opts)
+--- @return #BmemcachedBucket
+--  @param #BmemcachedCluster self
+function bmemcached_cluster:bucket(opts)
   opts = opts or {}
 
   opts.cluster = self
@@ -346,12 +211,6 @@ function couchbase_cluster:bucket(opts)
   opts.timeout = opts.timeout or defaults.timeout
   opts.pool_idle = opts.pool_idle or defaults.pool_idle
   opts.pool_size = opts.pool_size or defaults.pool_size
-  opts.n1ql_port = opts.n1ql_port or defaults.n1ql
-  opts.n1ql_timeout = opts.n1ql_timeout or 10000
-  if opts.password then
-    opts.n1ql_auth = "Basic " .. encode_base64(opts.name .. ":" ..  opts.password)
-  end
-  opts.n1ql = {}
 
   opts.map = self.buckets[opts.name]
   if not opts.map then
@@ -360,20 +219,20 @@ function couchbase_cluster:bucket(opts)
   end
 
   return setmetatable(opts, {
-    __index = couchbase_bucket
+    __index = bmemcacehd_bucket
   })
 end
 
 -- bucket class
 
---- @return #CouchbaseSession
---  @param #CouchbaseBucket self
-function couchbase_bucket:session()
+--- @return #BmemcachedSession
+--  @param #BmemcachedBucket self
+function bmemcached_bucket:session()
   return setmetatable({
     bucket = self,
     connections = {}
   }, {
-    __index = couchbase_session
+    __index = bmemcached_session
   })
 end
 
@@ -432,24 +291,24 @@ local function close(self)
   self.connections = {}
 end
 
-function couchbase_session:clone()
+function bmemcached_session:clone()
   return setmetatable({
     bucket = self.bucket,
     connections = {}
   }, {
-    __index = couchbase_session
+    __index = bmemcached_session
   })
 end
 
-function couchbase_session:setkeepalive()
+function bmemcached_session:setkeepalive()
   setkeepalive(self)
 end
 
-function couchbase_session:close()
+function bmemcached_session:close()
   close(self)
 end
 
-function couchbase_session:noop()
+function bmemcached_session:noop()
   local resp = {}
   foreach_v(self.connections, function(sock)
     tinsert(resp, request(self.bucket, sock, encode(op_code.Noop, {})))
@@ -457,24 +316,24 @@ function couchbase_session:noop()
   return resp
 end
 
-function couchbase_session:flush()
+function bmemcached_session:flush()
   return request(self.bucket, connect(self), encode(op_code.Flush, {}))    
 end
 
-function couchbase_session:flushQ()
+function bmemcached_session:flushQ()
   error("Unsupported")
 end
 
 local op_extras = {
-  [op_code.Set]      = c.deadbeef,
-  [op_code.SetQ]     = c.deadbeef,
-  [op_code.Add]      = c.deadbeef,
-  [op_code.AddQ]     = c.deadbeef,
-  [op_code.Replace]  = c.deadbeef,
-  [op_code.ReplaceQ] = c.deadbeef
+  [op_code.Set]      = zero_4,
+  [op_code.SetQ]     = zero_4,
+  [op_code.Add]      = zero_4,
+  [op_code.AddQ]     = zero_4,
+  [op_code.Replace]  = zero_4,
+  [op_code.ReplaceQ] = zero_4
 }
 
-function couchbase_session:set(key, value, expire, cas)
+function bmemcached_session:set(key, value, expire, cas)
   assert(key and value, "key and value required")
   local vbucket_id = get_vbucket_id(self.bucket, key)
   return request(self.bucket, connect(self, vbucket_id), encode(op_code.Set, {
@@ -487,7 +346,7 @@ function couchbase_session:set(key, value, expire, cas)
   }))
 end
 
-function couchbase_session:setQ(key, value, expire, cas)
+function bmemcached_session:setQ(key, value, expire, cas)
   assert(key and value, "key and value required")
   local vbucket_id = get_vbucket_id(self.bucket, key)
   return requestQ(self.bucket, connect(self, vbucket_id), encode(op_code.SetQ, {
@@ -500,7 +359,7 @@ function couchbase_session:setQ(key, value, expire, cas)
   }))
 end
 
-function couchbase_session:add(key, value, expire)
+function bmemcached_session:add(key, value, expire)
   assert(key and value, "key and value required")
   local vbucket_id = get_vbucket_id(self.bucket, key)
   return request(self.bucket, connect(self, vbucket_id), encode(op_code.Add, {
@@ -512,7 +371,7 @@ function couchbase_session:add(key, value, expire)
   }))
 end
 
-function couchbase_session:addQ(key, value, expire)
+function bmemcached_session:addQ(key, value, expire)
   assert(key and value, "key and value required")
   local vbucket_id = get_vbucket_id(self.bucket, key)
   return requestQ(self.bucket, connect(self, vbucket_id), encode(op_code.AddQ, {
@@ -524,7 +383,7 @@ function couchbase_session:addQ(key, value, expire)
   }))
 end
 
-function couchbase_session:replace(key, value, expire, cas)
+function bmemcached_session:replace(key, value, expire, cas)
   assert(key and value, "key and value required")
   local vbucket_id = get_vbucket_id(self.bucket, key)
   return request(self.bucket, connect(self, vbucket_id), encode(op_code.Replace, {
@@ -537,7 +396,7 @@ function couchbase_session:replace(key, value, expire, cas)
   }))
 end
 
-function couchbase_session:replaceQ(key, value, expire, cas)
+function bmemcached_session:replaceQ(key, value, expire, cas)
   assert(key and value, "key and value required")
   local vbucket_id = get_vbucket_id(self.bucket, key)
   return requestQ(self.bucket, connect(self, vbucket_id), encode(op_code.ReplaceQ, {
@@ -550,7 +409,7 @@ function couchbase_session:replaceQ(key, value, expire, cas)
   }))
 end 
 
-function couchbase_session:get(key)
+function bmemcached_session:get(key)
   assert(key, "key required")
   local vbucket_id = get_vbucket_id(self.bucket, key)
   return request(self.bucket, connect(self, vbucket_id), encode(op_code.Get, {
@@ -559,11 +418,11 @@ function couchbase_session:get(key)
   }))
 end
 
-function couchbase_session:getQ(key)
+function bmemcached_session:getQ(key)
   error("Unsupported")
 end
 
-function couchbase_session:getK(key)
+function bmemcached_session:getK(key)
   assert(key, "key required")
   local vbucket_id = get_vbucket_id(self.bucket, key)
   return request(self.bucket, connect(self, vbucket_id), encode(op_code.GetK, {
@@ -572,11 +431,11 @@ function couchbase_session:getK(key)
   }))
 end
 
-function couchbase_session:getKQ(key)
+function bmemcached_session:getKQ(key)
   error("Unsupported")
 end
 
-function couchbase_session:touch(key, expire)
+function bmemcached_session:touch(key, expire)
   assert(key and expire, "key and expire required")
   local vbucket_id = get_vbucket_id(self.bucket, key)
   return request(self.bucket, connect(self, vbucket_id), encode(op_code.Touch, {
@@ -586,7 +445,7 @@ function couchbase_session:touch(key, expire)
   }))
 end
 
-function couchbase_session:gat(key, expire)
+function bmemcached_session:gat(key, expire)
   assert(key and expire, "key and expire required")
   local vbucket_id = get_vbucket_id(self.bucket, key)
   return request(self.bucket, connect(self, vbucket_id), encode(op_code.GAT, {
@@ -596,15 +455,15 @@ function couchbase_session:gat(key, expire)
   }))
 end
 
-function couchbase_session:gatQ(key, expire)
+function bmemcached_session:gatQ(key, expire)
   error("Unsupported")
 end
 
-function couchbase_session:gatKQ(key, expire)
+function bmemcached_session:gatKQ(key, expire)
   error("Unsupported")
 end
 
-function couchbase_session:delete(key, cas)
+function bmemcached_session:delete(key, cas)
   local vbucket_id = get_vbucket_id(self.bucket, key)
   return request(self.bucket, connect(self, vbucket_id), encode(op_code.Delete, {
     key = key,
@@ -613,7 +472,7 @@ function couchbase_session:delete(key, cas)
   }))
 end
 
-function couchbase_session:deleteQ(key, cas)
+function bmemcached_session:deleteQ(key, cas)
   local vbucket_id = get_vbucket_id(self.bucket, key)
   return requestQ(self.bucket, connect(self, vbucket_id), encode(op_code.DeleteQ, {
     key = key,
@@ -622,7 +481,7 @@ function couchbase_session:deleteQ(key, cas)
   }))
 end
 
-function couchbase_session:increment(key, increment, initial, expire)
+function bmemcached_session:increment(key, increment, initial, expire)
   local vbucket_id = get_vbucket_id(self.bucket, key)
   local extras = zero_4                  ..
                  put_i32(increment or 1) ..
@@ -641,7 +500,7 @@ function couchbase_session:increment(key, increment, initial, expire)
   end)
 end 
 
-function couchbase_session:incrementQ(key, increment, initial, expire)
+function bmemcached_session:incrementQ(key, increment, initial, expire)
   local vbucket_id = get_vbucket_id(self.bucket, key)
   local extras = zero_4                  ..
                  put_i32(increment or 1) ..
@@ -655,7 +514,7 @@ function couchbase_session:incrementQ(key, increment, initial, expire)
   }))
 end 
 
-function couchbase_session:decrement(key, decrement, initial, expire)
+function bmemcached_session:decrement(key, decrement, initial, expire)
   local vbucket_id = get_vbucket_id(self.bucket, key)
   local extras = zero_4                  ..
                  put_i32(decrement or 1) ..
@@ -674,7 +533,7 @@ function couchbase_session:decrement(key, decrement, initial, expire)
   end)
 end
 
-function couchbase_session:decrementQ(key, decrement, initial, expire)
+function bmemcached_session:decrementQ(key, decrement, initial, expire)
   local vbucket_id = get_vbucket_id(self.bucket, key)
   local extras = zero_4                  ..
                  put_i32(decrement or 1) ..
@@ -688,7 +547,7 @@ function couchbase_session:decrementQ(key, decrement, initial, expire)
   }))
 end
 
-function couchbase_session:append(key, value, cas)
+function bmemcached_session:append(key, value, cas)
   assert(key and value, "key and value required")
   local vbucket_id = get_vbucket_id(self.bucket, key)
   return request(self.bucket, connect(self, vbucket_id), encode(op_code.Append, {
@@ -699,7 +558,7 @@ function couchbase_session:append(key, value, cas)
   }))
 end
 
-function couchbase_session:appendQ(key, value, cas)
+function bmemcached_session:appendQ(key, value, cas)
   assert(key and value, "key and value required")
   local vbucket_id = get_vbucket_id(self.bucket, key)
   return requestQ(self.bucket, connect(self, vbucket_id), encode(op_code.AppendQ, {
@@ -710,7 +569,7 @@ function couchbase_session:appendQ(key, value, cas)
   }))
 end
 
-function couchbase_session:prepend(key, value, cas)
+function bmemcached_session:prepend(key, value, cas)
   assert(key and value, "key and value required")
   local vbucket_id = get_vbucket_id(self.bucket, key)
   return request(self.bucket, connect(self, vbucket_id), encode(op_code.Prepend, {
@@ -721,7 +580,7 @@ function couchbase_session:prepend(key, value, cas)
   }))
 end
 
-function couchbase_session:prependQ(key, value, cas)
+function bmemcached_session:prependQ(key, value, cas)
   if not key or not value then
     return nil, "key and value required"
   end
@@ -734,18 +593,18 @@ function couchbase_session:prependQ(key, value, cas)
   }))
 end
 
-function couchbase_session:stat(key)
+function bmemcached_session:stat(key)
   return request_until(self.bucket, connect(self), encode(op_code.Stat, {
     key = key,
     opaque = 0
   }))
 end
 
-function couchbase_session:version()
+function bmemcached_session:version()
   return request(self.bucket, connect(self), encode(op_code.Version, {}))
 end
 
-function couchbase_session:verbosity(level)
+function bmemcached_session:verbosity(level)
   if not level then
     return nil, "level required"
   end
@@ -754,31 +613,31 @@ function couchbase_session:verbosity(level)
   }))
 end
 
-function couchbase_session:helo()
+function bmemcached_session:helo()
   error("Unsupported")
 end
 
-function couchbase_session:sasl_list()
+function bmemcached_session:sasl_list()
   return request(self.bucket, connect(self), encode(op_code.SASL_List, {}))
 end
 
-function couchbase_session:set_vbucket()
+function bmemcached_session:set_vbucket()
   error("Unsupported")
 end
 
-function couchbase_session:get_vbucket(key)
+function bmemcached_session:get_vbucket(key)
   error("Unsupported")
 end
 
-function couchbase_session:del_vbucket()
+function bmemcached_session:del_vbucket()
   error("Unsupported")
 end
 
-function couchbase_session:list_buckets()
+function bmemcached_session:list_buckets()
   return request(self.bucket, connect(self), encode(op_code.List_buckets, {}))
 end
 
-function couchbase_session:send(op, opts)
+function bmemcached_session:send(op, opts)
   assert(op and opts and opts.key, "op_code, opts and opts.key required")
   opts.vbucket_id = get_vbucket_id(self.bucket, opts.key)
   opts.extras = op_extras[op]
@@ -787,7 +646,7 @@ function couchbase_session:send(op, opts)
   return unpack(result)
 end
 
-function couchbase_session:receive(peer, opts)
+function bmemcached_session:receive(peer, opts)
   assert(peer, "peer required")
 
   opts = opts or {}
@@ -814,7 +673,7 @@ function couchbase_session:receive(peer, opts)
   return req:get_unknown()
 end
 
-function couchbase_session:batch(b, opts)
+function bmemcached_session:batch(b, opts)
   local threads = {}
   local j = 0
 
@@ -890,57 +749,6 @@ local function encode_args(args)
     tinsert(tab, k .. "=" .. v)
   end)
   return tconcat(tab, "&")
-end
-
-function couchbase_session:query(statement, args, timeout)
-  local peer = assert(get_query_peer(self.bucket), "no n1ql peer")
-
-  local httpc = http.new()
-
-  httpc:set_timeout(self.bucket.n1ql_timeout)
-
-  assert(httpc:connect(peer, self.bucket.n1ql_port))
-
-  local query = { "statement=" .. statement }
-  if args then
-    if #args ~= 0 then
-      -- positioned
-      tinsert(query, "args=" .. json_encode(args))
-    else
-      -- named
-      tinsert(query, encode_args(args))
-    end
-  end
-  timeout = timeout or self.bucket.n1ql_timeout
-  tinsert(query, "timeout=" .. timeout .. "ms")
-
-  query = tconcat(query, "&")
-
-  ngx_log(DEBUG, "query [", self.bucket.name, "] ", query)
-
-  local resp = assert(httpc:request {
-    path = "/query/service",
-    method = "POST",
-    headers = {
-      Authorization = self.bucket.n1ql_auth,
-      Host = peer .. ":" .. self.bucket.n1ql_port,
-      ["Content-Type"] = "application/x-www-form-urlencoded"
-    },
-    body = query
-  })
-
-  local status = resp.status
-  local body = assert(resp:read_body())
-
-  body = json_decode(body)
-
-  httpc:set_keepalive(self.bucket.pool_idle * 1000, self.bucket.pool_size)
-
-  if status >= HTTP_BAD_REQUEST then
-    return nil, body.errors
-  end
-
-  return body.metrics.resultCount ~= 0 and body.results or null
 end
 
 return _M
