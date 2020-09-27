@@ -7,8 +7,6 @@ local couchbase = require "resty.couchbase"
 local cluster = couchbase.cluster {
 --host = "10.0.10.2",
   host = "192.168.2.2",
-  user = "Administrator",
-  password = "Administrator"
 }
 
 local bucket = cluster:bucket {
