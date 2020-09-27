@@ -1,6 +1,7 @@
 # lua-resty-couchbase
-Nginx lua couchbase client (binary memcached protocol)
+Nginx lua binary memcached protocol
 
+This library leverages some implementation of Couchbase and adjust it to support only Memcached cluster. It's well tested with Apache Ignite cluster.
 Thank's for the ideas: [Lua-couchbase](https://github.com/kolchanov/Lua-couchbase)
 
 Table of Contents
@@ -52,49 +53,28 @@ Production ready.
 Synopsis
 =======
 
-Module
+Module "example"
 -------
 ```
 local _M = {
   _VERSION = "1.0"
 }
 
-local couchbase = require "resty.couchbase"
+local bmemcached = require "resty.bmemcached"
 
 -- cluster
-local cluster = couchbase.cluster {
-  host = "10.0.10.2",
-  user = "Administrator",
-  password = "Administrator"
-}
+local cluster = bmemcached.cluster({
+  host = "10.0.10.2"
+})
 
--- one bucket
-local bucket1 = cluster:bucket {
-  name = "b1",
-  password = "1111",
-  VBUCKETAWARE = true
-}
-
--- second bucket
-local bucket2 = cluster:bucket {
-  name = "b2",
-  password = "2222",
-  VBUCKETAWARE = true
-}
+-- select bucket
+local bucket1 = cluster:bucket()
 
 function _M.test_b1(key, value)
-  local cb = bucket1:session()
-  local r = cb:set(key, value)
-  r = cb:get(key)
-  cb:setkeepalive()
-  return r
-end
-
-function _M.test_b2(key, value)
-  local cb = bucket2:session()
-  local r = cb:set(key, value)
-  r = cb:get(key)
-  cb:setkeepalive()
+  local ses = bucket1:session()
+  local r = ses:set(key, value)
+  r = ses:get(key)
+  ses:setkeepalive()
   return r
 end
 
@@ -109,16 +89,16 @@ server {
   listen 4444;
   location /test_b1 {
     content_by_lua_block {
-      local cb = require "cb"
+      local ex = require "example"
       local cjson = require "cjson"
-      ngx.say(cjson.encode(cb.test_b1(ngx.var.arg_key, ngx.var.arg_value)))
+      ngx.say(cjson.encode(ex.test_b1(ngx.var.arg_key, ngx.var.arg_value)))
     }
   }
   location /test_b2 {
     content_by_lua_block {
-      local cb = require "cb"
+      local ex = require "example"
       local cjson = require "cjson"
-      ngx.say(cjson.encode(cb.test_b2(ngx.var.arg_key, ngx.var.arg_value)))
+      ngx.say(cjson.encode(ex.test_b2(ngx.var.arg_key, ngx.var.arg_value)))
     }
   }
 }
@@ -143,7 +123,7 @@ Create the cluster object.
 * timeout - http timeout.
 
 ```
-local couchbase = require "resty.couchbase"
+local couchbase = require "resty.bmemcached"
 
 local cluster = couchbase.cluster {
   host = "10.0.10.2",
