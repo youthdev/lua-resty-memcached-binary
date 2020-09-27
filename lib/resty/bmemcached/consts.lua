@@ -222,7 +222,7 @@ _M.status_desc = {
 
 -- extras consts
 
-local encoder = require "resty.couchbase.encoder"
+local encoder = require "resty.bmemcached.encoder"
 
 _M.deadbeef = encoder.pack_bytes(4, 0xde, 0xad, 0xbe, 0xef)
 
