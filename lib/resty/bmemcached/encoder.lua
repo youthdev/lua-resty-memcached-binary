@@ -143,7 +143,7 @@ function _M.handle_header(hdr)
   assert(magic == MAGIC.SRV_RESP, "incorrect magic")
 
   -- lazy initialized
-  c = c or require "resty.couchbase.consts" 
+  c = c or require "resty.bmemcached.consts" 
 
   return {
     status_code   = status_code,
